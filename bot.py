@@ -604,10 +604,20 @@ async def handle_buttons(callback: CallbackQuery):
 async def on_startup():
     """Действия при запуске бота"""
     logger.info("🚀 Бот запускается на Render...")
+    
+    # Жестко сбрасываем все подключения
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Получаем и закрываем все старые обновления
+    updates = await bot.get_updates(offset=-1, timeout=1)
+    if updates:
+        await bot.get_updates(offset=updates[-1].update_id + 1)
+    
+    logger.info("🧹 Все старые подключения сброшены")
     logger.info(f"🔐 Секретная команда: /{SECRET_ADMIN_COMMAND}")
     logger.info("✅ База данных подключена")
     
-    # Отправляем уведомление админу о запуске
+    # Отправляем уведомление админу
     try:
         for admin_id in ADMIN_IDS:
             await bot.send_message(
