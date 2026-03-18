@@ -1,658 +1,742 @@
 import asyncio
-import random
-import string
-import sqlite3
-import json
 import os
-from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-import aiohttp
-import logging
+import tempfile
+import shutil
+import secrets
+import aiosqlite
+from datetime import datetime
 
-# ========== НАСТРОЙКИ ДЛЯ RENDER ==========
-# Берем токен из переменных окружения (БЕЗОПАСНОСТЬ!)
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8564052664:AAER6YsL8SoDZ5qbP6t_2dYdllvGNgvoRkI")
-ADMIN_IDS = [2044932905]
-SECRET_ADMIN_COMMAND = "goneadmintopsecret"
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import Command, CommandObject
+from aiogram.types import Message, FSInputFile
+from aiogram.enums import ParseMode
+from aiohttp import web
 
-MIN_USERNAME_LENGTH = 5
-MAX_USERNAME_LENGTH = 6
-SUBSCRIPTION_DAYS = 30
+# ================= НАСТРОЙКИ =================
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", 0)) # Сюда передадим твой ID через Render
 
-# Настройка логирования для Render
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+if not BOT_TOKEN or not ADMIN_ID:
+    print("ВНИМАНИЕ: Не указан BOT_TOKEN или ADMIN_ID!")
 
-# ========== БАЗА ДАННЫХ ==========
-class Database:
-    def __init__(self, db_name="bot_database.db"):
-        self.db_name = db_name
-        self.init_db()
+XOR_KEY = "gonebestincrmp777"
+COMPILER_CMD = "i686-w64-mingw32-g++"
+DB_NAME = "bot_database.db"
 
-    def get_connection(self):
-        return sqlite3.connect(self.db_name)
+# ================= БАЗА ДАННЫХ =================
+async def init_db():
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT)''')
+        await db.execute('''CREATE TABLE IF NOT EXISTS keys (key_text TEXT PRIMARY KEY, is_used INTEGER DEFAULT 0, used_by INTEGER)''')
+        await db.commit()
 
-    def init_db(self):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
+async def check_access(user_id: int) -> bool:
+    if user_id == ADMIN_ID:
+        return True
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,)) as cursor:
+            return await cursor.fetchone() is not None
 
-            # Таблица пользователей
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT,
-                    first_name TEXT,
-                    subscription_key TEXT,
-                    is_active BOOLEAN DEFAULT 0,
-                    expires_at TIMESTAMP,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
+# ================= C++ ШАБЛОН =================
+EMBEDDED_ASI_CODE = r'''// loader_fast_restore.cpp
+// ===========================
+// ASI Plugin (DLL) - Быстрое восстановление index.html
+// Логика: Двойные маркеры (HTML + JS) для надежного удаления
+// ===========================
 
-            # Таблица ключей
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS subscription_keys (
-                    key TEXT PRIMARY KEY,
-                    is_used BOOLEAN DEFAULT 0,
-                    used_by_user_id INTEGER,
-                    used_at TIMESTAMP,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    created_by INTEGER
-                )
-            ''')
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <string>
+#include <vector>
+#include <fstream>
+#include <sstream>
+#include <filesystem>
+#include <thread>
+#include <chrono>
+#include <random>
 
-            # Таблица сессий поиска
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS search_sessions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    length INTEGER,
-                    use_digits BOOLEAN,
-                    checked_count INTEGER DEFAULT 0,
-                    found_count INTEGER DEFAULT 0,
-                    status TEXT DEFAULT 'active',
-                    waiting_for_response BOOLEAN DEFAULT 0,
-                    current_username TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
+#pragma comment(lib, "ws2_32.lib")
 
-            # Таблица найденных юзернеймов
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS found_usernames (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE,
-                    session_id INTEGER,
-                    found_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
+namespace fs = std::filesystem;
 
-            # Таблица логов админа
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS admin_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    admin_id INTEGER,
-                    action TEXT,
-                    details TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
+// ---------------------- Настройки ----------------------
+static const char* INDEX_PATH    = "uiresources\\index.html";
+static const char* INDEX_BACKUP  = "uiresources\\index_backup.html";
+static const char* INJECT_MARKER = "<!-- HUD_JS_INJECTED -->"; // HTML маркер в начале
+static const char* JS_END_MARKER = "// HUD_INJECTION_END_XYZ123"; // JS маркер в конце
 
-            conn.commit()
-            logger.info("✅ База данных готова")
+// =======================================================
+// !!! СЮДА ВСТАВИТЬ ЗАШИФРОВАННЫЙ МАССИВ ИЗ PYTHON СКРИПТА !!!
+// =======================================================
+static const unsigned char EMBEDDED_JS_DATA[] = {
+    /* EMBED_JS_DATA_HERE */
+};
+// =======================================================
 
-    # ===== ВСЕ МЕТОДЫ БАЗЫ ДАННЫХ (ОСТАЛИСЬ БЕЗ ИЗМЕНЕНИЙ) =====
-    def add_user(self, user_id, username=None, first_name=None):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT OR IGNORE INTO users (user_id, username, first_name)
-                VALUES (?, ?, ?)
-            ''', (user_id, username, first_name))
-            conn.commit()
+// ----------------- Вспомогательные функции -----------------
 
-    def check_subscription(self, user_id):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT is_active, expires_at FROM users 
-                WHERE user_id = ?
-            ''', (user_id,))
-            result = cursor.fetchone()
+// ФУНКЦИЯ XOR-ДЕШИФРОВАНИЯ ИЗ ВТОРОГО ИСХОДНИКА
+static std::string decrypt_js_data(const unsigned char* data, size_t size) {
+    if (size <= 1) return "";
+    
+    std::string result;
+    result.reserve(size);
+    
+    // ФИКСИРОВАННЫЙ ключ - ДОЛЖЕН СОВПАДАТЬ С КЛЮЧОМ В PYTHON!
+    std::string key = "gonebestincrmp777"; // ← ПОМЕНЯЙ НА СВОЙ КЛЮЧ!
+    
+    size_t keyIndex = 0;
+    
+    for (size_t i = 0; i < size; i++) {
+        char decrypted = data[i] ^ key[keyIndex];
+        result.push_back(decrypted);
+        keyIndex = (keyIndex + 1) % key.length();
+    }
+    
+    return result;
+}
 
-            if not result or not result[0]:
-                return False
+static std::string get_game_root() {
+    char buf[MAX_PATH];
+    GetModuleFileNameA(NULL, buf, MAX_PATH);
+    std::string s(buf);
+    size_t pos = s.find_last_of("\\/");
+    return (pos == std::string::npos) ? s : s.substr(0, pos);
+}
 
-            expires_at = datetime.fromisoformat(result[1]) if result[1] else None
-            return expires_at and expires_at > datetime.now()
+static std::string combine_paths(const std::string& path1, const std::string& path2) {
+    if (path1.empty()) return path2;
+    if (path2.empty()) return path1;
+    char last_char = path1[path1.size() - 1];
+    if (last_char == '\\' || last_char == '/') return path1 + path2;
+    return path1 + "\\" + path2;
+}
 
-    def activate_subscription(self, user_id, key):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            expires_at = datetime.now() + timedelta(days=SUBSCRIPTION_DAYS)
+// ------------- Сборка фрагмента с двойными маркерами -------------
+static std::string build_fragment_with_hud_js(const std::string& hudJs) {
+    std::string s;
+    s.reserve(hudJs.size() + 300);
 
-            cursor.execute('''
-                UPDATE users 
-                SET subscription_key = ?, is_active = 1, expires_at = ?
-                WHERE user_id = ?
-            ''', (key, expires_at.isoformat(), user_id))
+    // HTML маркер в начале
+    s.append("\n");
+    s.append(INJECT_MARKER);
+    s.append("\n");
 
-            cursor.execute('''
-                UPDATE subscription_keys 
-                SET is_used = 1, used_by_user_id = ?, used_at = ?
-                WHERE key = ?
-            ''', (user_id, datetime.now().isoformat(), key))
+    // Начало скрипта
+    s.append("<script>(function(){\n");
+    s.append("  try {(function(){\n");
+    
+    // Вставляем пользовательский JS код
+    s.append(hudJs);
+    
+    // JS маркер в конце перед закрывающими скобками
+    s.append("\n    ");
+    s.append(JS_END_MARKER);
+    s.append("\n");
+    
+    // Закрываем функции и добавляем fetch
+    s.append("  })();}catch(e){console.error('HUD inject error', e);}\n");
+    s.append("  try {fetch('http://127.0.0.1:19191/hud-ready').catch(function(){});}catch(e){}\n");
+    
+    // Конец скрипта
+    s.append("})();</script>\n");
 
-            conn.commit()
+    return s;
+}
 
-    def generate_keys(self, count=10, created_by=None):
-        keys = []
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            for _ in range(count):
-                key = 'TG' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=14))
-                cursor.execute('''
-                    INSERT INTO subscription_keys (key, created_by)
-                    VALUES (?, ?)
-                ''', (key, created_by))
-                keys.append(key)
-            conn.commit()
-        return keys
+// Быстрое создание/обновление бэкапа
+static bool create_or_update_backup(const std::string& srcPath, const std::string& dstPath) {
+    try {
+        if (!fs::exists(srcPath)) return false;
+        
+        // Проверяем, отличается ли текущий файл от бэкапа
+        if (fs::exists(dstPath)) {
+            auto src_time = fs::last_write_time(srcPath);
+            auto dst_time = fs::last_write_time(dstPath);
+            if (src_time <= dst_time) {
+                // Проверяем содержимое
+                std::ifstream src(srcPath, std::ios::binary);
+                std::ifstream dst(dstPath, std::ios::binary);
+                if (src && dst) {
+                    std::string src_content((std::istreambuf_iterator<char>(src)), 
+                                          std::istreambuf_iterator<char>());
+                    std::string dst_content((std::istreambuf_iterator<char>(dst)), 
+                                          std::istreambuf_iterator<char>());
+                    if (src_content == dst_content) {
+                        return true; // Бэкап актуален
+                    }
+                }
+            }
+        }
+        
+        // Создаем/обновляем бэкап
+        fs::copy(srcPath, dstPath, fs::copy_options::overwrite_existing);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
 
-    def check_key(self, key):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT * FROM subscription_keys 
-                WHERE key = ? AND is_used = 0
-            ''', (key,))
-            return cursor.fetchone() is not None
+// СУПЕР БЫСТРОЕ ВОССТАНОВЛЕНИЕ из бэкапа
+static bool fast_restore_from_backup(const std::string& srcPath, const std::string& dstPath) {
+    try {
+        if (!fs::exists(srcPath)) return false;
+        
+        // Просто копируем бэкап обратно
+        fs::copy(srcPath, dstPath, fs::copy_options::overwrite_existing);
+        return true;
+    } catch (...) {
+        // Если не получилось напрямую, пробуем через временный файл
+        try {
+            std::string tempPath = dstPath + ".tmp";
+            fs::copy(srcPath, tempPath, fs::copy_options::overwrite_existing);
+            fs::rename(tempPath, dstPath);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+}
 
-    def create_session(self, user_id, length, use_digits):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO search_sessions 
-                (user_id, length, use_digits, checked_count, found_count, status, waiting_for_response)
-                VALUES (?, ?, ?, 0, 0, 'active', 0)
-            ''', (user_id, length, 1 if use_digits else 0))
-            conn.commit()
-            return cursor.lastrowid
+// Умное удаление только инжектированного скрипта
+static bool remove_injected_script_smart(const std::string& indexPath) {
+    try {
+        if (!fs::exists(indexPath)) return false;
+        
+        std::ifstream in(indexPath, std::ios::binary);
+        if (!in.is_open()) return false;
+        
+        std::string content((std::istreambuf_iterator<char>(in)), 
+                           std::istreambuf_iterator<char>());
+        in.close();
+        
+        bool changed = false;
+        
+        // СПОСОБ 1: Ищем по HTML маркеру
+        size_t start_pos = content.find(INJECT_MARKER);
+        if (start_pos != std::string::npos) {
+            // Ищем закрывающий </script> после маркера
+            size_t end_pos = content.find("</script>", start_pos);
+            if (end_pos != std::string::npos) {
+                end_pos += 9; // + длина "</script>"
+                content.erase(start_pos, end_pos - start_pos);
+                changed = true;
+            }
+        }
+        
+        // СПОСОБ 2: Если HTML маркер не найден, ищем по JS маркеру
+        if (!changed) {
+            size_t js_marker_pos = content.find(JS_END_MARKER);
+            if (js_marker_pos != std::string::npos) {
+                // Ищем начало <script перед маркером
+                size_t script_start = content.rfind("<script", js_marker_pos);
+                if (script_start != std::string::npos) {
+                    // Ищем закрывающий </script> после маркера
+                    size_t script_end = content.find("</script>", js_marker_pos);
+                    if (script_end != std::string::npos) {
+                        script_end += 9;
+                        content.erase(script_start, script_end - script_start);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        
+        // СПОСОБ 3: Ищем по сигнатуре fetch (последняя попытка)
+        if (!changed) {
+            size_t fetch_pos = content.find("fetch('http://127.0.0.1:19191/hud-ready')");
+            if (fetch_pos != std::string::npos) {
+                size_t script_start = content.rfind("<script", fetch_pos);
+                if (script_start != std::string::npos) {
+                    size_t script_end = content.find("</script>", fetch_pos);
+                    if (script_end != std::string::npos) {
+                        script_end += 9;
+                        content.erase(script_start, script_end - script_start);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        
+        if (changed) {
+            std::ofstream out(indexPath, std::ios::binary | std::ios::trunc);
+            if (!out.is_open()) return false;
+            out << content;
+            return true;
+        }
+        
+        return false; // Нечего удалять
+        
+    } catch (...) {
+        return false;
+    }
+}
 
-    def set_waiting(self, session_id, username):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE search_sessions 
-                SET waiting_for_response = 1, current_username = ?
-                WHERE id = ?
-            ''', (username, session_id))
-            conn.commit()
+// Умное восстановление: сначала удаляем скрипт, потом бэкап
+static bool smart_restore(const std::string& indexPath, const std::string& backupPath) {
+    // ШАГ 1: Пытаемся быстро удалить только скрипт
+    if (remove_injected_script_smart(indexPath)) {
+        return true; // Успешно удалили только инжектированную часть
+    }
+    
+    // ШАГ 2: Если не удалось, восстанавливаем из бэкапа
+    if (fs::exists(backupPath)) {
+        return fast_restore_from_backup(backupPath, indexPath);
+    }
+    
+    // ШАГ 3: Если нет бэкапа, пытаемся найти и удалить вручную
+    try {
+        if (!fs::exists(indexPath)) return false;
+        
+        std::ifstream in(indexPath, std::ios::binary);
+        if (!in.is_open()) return false;
+        
+        std::string content((std::istreambuf_iterator<char>(in)), 
+                           std::istreambuf_iterator<char>());
+        in.close();
+        
+        // Ищем любой из маркеров
+        if (content.find(INJECT_MARKER) != std::string::npos || 
+            content.find(JS_END_MARKER) != std::string::npos) {
+            // Создаем чистый файл
+            std::ofstream out(indexPath, std::ios::binary | std::ios::trunc);
+            if (!out.is_open()) return false;
+            
+            // Записываем что-то минимальное
+            out << "<html><body></body></html>";
+            return true;
+        }
+    } catch (...) {}
+    
+    return false;
+}
 
-    def clear_waiting(self, session_id):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE search_sessions 
-                SET waiting_for_response = 0, current_username = NULL
-                WHERE id = ?
-            ''', (session_id,))
-            conn.commit()
+// Проверка, уже ли вставлен фрагмент (по любому маркеру)
+static bool is_already_injected(const std::string& indexPath) {
+    try {
+        std::ifstream in(indexPath, std::ios::binary);
+        if (!in.is_open()) return false;
+        std::string content((std::istreambuf_iterator<char>(in)), 
+                           std::istreambuf_iterator<char>());
+        // Проверяем оба маркера
+        return content.find(INJECT_MARKER) != std::string::npos || 
+               content.find(JS_END_MARKER) != std::string::npos;
+    } catch (...) {
+        return false;
+    }
+}
 
-    def is_waiting(self, session_id):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT waiting_for_response FROM search_sessions WHERE id = ?
-            ''', (session_id,))
-            result = cursor.fetchone()
-            return result[0] == 1 if result else False
+static bool inject_fragment(const std::string& indexPath, const std::string& fragment) {
+    try {
+        // Читаем весь файл
+        std::ifstream in(indexPath, std::ios::binary);
+        if (!in.is_open()) return false;
+        std::string content((std::istreambuf_iterator<char>(in)), 
+                           std::istreambuf_iterator<char>());
+        in.close();
 
-    def stop_session(self, session_id):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE search_sessions SET status = 'stopped', waiting_for_response = 0 WHERE id = ?
-            ''', (session_id,))
-            conn.commit()
+        // Ищем место для вставки (перед </body>)
+        size_t pos = content.find("</body>");
+        if (pos == std::string::npos) pos = content.find("</BODY>");
+        if (pos == std::string::npos) {
+            // Если нет body, вставляем перед </html>
+            pos = content.find("</html>");
+            if (pos == std::string::npos) pos = content.find("</HTML>");
+        }
+        
+        if (pos == std::string::npos) {
+            // Если ничего не найдено, добавляем в конец
+            content += fragment;
+        } else {
+            content.insert(pos, fragment);
+        }
 
-    def get_session_status(self, session_id):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT status FROM search_sessions WHERE id = ?
-            ''', (session_id,))
-            result = cursor.fetchone()
-            return result[0] if result else 'stopped'
+        // Записываем обратно
+        std::ofstream out(indexPath, std::ios::binary | std::ios::trunc);
+        if (!out.is_open()) return false;
+        out << content;
+        return true;
+    } catch (...) { 
+        return false; 
+    }
+}
 
-    def save_found_username(self, username, session_id):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute('''
-                    INSERT OR IGNORE INTO found_usernames (username, session_id)
-                    VALUES (?, ?)
-                ''', (username, session_id))
-                conn.commit()
-            except:
-                pass
+// ---------------- Mini HTTP server ----------------
+static void start_local_server_and_wait_for_ready(const std::string& indexPath, 
+                                                  const std::string& backupPath) {
+    WSADATA wsa;
+    SOCKET listen_sock = INVALID_SOCKET, client = INVALID_SOCKET;
+    sockaddr_in server_addr;
 
-    def update_session_stats(self, session_id, checked, found):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE search_sessions 
-                SET checked_count = ?, found_count = ? 
-                WHERE id = ?
-            ''', (checked, found, session_id))
-            conn.commit()
+    if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) return;
 
-    def get_users_stats(self):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM users")
-            total = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM users WHERE is_active = 1")
-            active = cursor.fetchone()[0]
-            return {"total": total, "active": active}
+    listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listen_sock == INVALID_SOCKET) { WSACleanup(); return; }
 
-    def get_keys_stats(self):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM subscription_keys")
-            total = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM subscription_keys WHERE is_used = 1")
-            used = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM subscription_keys WHERE is_used = 0")
-            free = cursor.fetchone()[0]
-            return {"total": total, "used": used, "free": free}
+    ZeroMemory(&server_addr, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    server_addr.sin_port = htons(19191);
 
+    int opt = 1;
+    setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
 
-# СОЗДАЕМ БАЗУ
-db = Database()
-
-
-# ========== ПРОВЕРКА ЮЗЕРНЕЙМОВ ==========
-async def check_username(username: str) -> bool:
-    url = f"https://t.me/{username}"
-
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    if (bind(listen_sock, (sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
+        closesocket(listen_sock); WSACleanup(); return;
+    }
+    if (listen(listen_sock, 1) == SOCKET_ERROR) {
+        closesocket(listen_sock); WSACleanup(); return;
     }
 
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url, headers=headers, allow_redirects=False, timeout=10) as response:
-                status = response.status
+    const int TIMEOUT_SECONDS = 30; // Уменьшил таймаут для скорости
+    auto start = std::chrono::steady_clock::now();
+    char buffer[1024];
+    bool got_ready = false;
 
-                if status in [301, 302, 307, 308]:
-                    location = response.headers.get('Location', '')
-                    if any(x in location for x in ['search', 'notfound', 'not_exist']):
-                        logger.info(f"✅ {username} - СВОБОДЕН")
-                        return True
-                    else:
-                        return False
+    // Неблокирующий режим для быстрого выхода
+    u_long mode = 1;
+    ioctlsocket(listen_sock, FIONBIO, &mode);
 
-                elif status == 200:
-                    html = await response.text()
-                    if 'tgme_page_photo' in html or 'tgme_page_title' in html:
-                        return False
-                    else:
-                        logger.info(f"✅ {username} - СВОБОДЕН")
-                        return True
+    while (true) {
+        fd_set readfds; 
+        FD_ZERO(&readfds); 
+        FD_SET(listen_sock, &readfds);
+        
+        timeval tv = {0, 100000}; // 100ms таймаут для отзывчивости
+        
+        if (select(0, &readfds, NULL, NULL, &tv) > 0 && FD_ISSET(listen_sock, &readfds)) {
+            client = accept(listen_sock, NULL, NULL);
+            if (client != INVALID_SOCKET) {
+                int len = recv(client, buffer, sizeof(buffer)-1, 0);
+                if (len > 0) {
+                    buffer[len] = '\0';
+                    if (strstr(buffer, "GET /hud-ready") || strstr(buffer, "/hud-ready")) {
+                        // Отправляем быстрый ответ
+                        const char* response = 
+                            "HTTP/1.1 200 OK\r\n"
+                            "Connection: close\r\n"
+                            "Content-Length: 2\r\n"
+                            "\r\n"
+                            "OK";
+                        send(client, response, (int)strlen(response), 0);
+                        got_ready = true;
+                    }
+                }
+                closesocket(client);
+                
+                if (got_ready) break; // Немедленный выход
+            }
+        }
+        
+        // Проверяем таймаут
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - start).count();
+        
+        if (elapsed > TIMEOUT_SECONDS) {
+            // Таймаут - все равно восстанавливаем
+            break;
+        }
+        
+        // Короткая пауза для CPU
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
 
-                else:
-                    return True
+    closesocket(listen_sock);
+    WSACleanup();
 
-        except Exception as e:
-            logger.info(f"⚠️ {username} - ОШИБКА: {e}")
-            return False
+    // СРАЗУ ВОССТАНАВЛИВАЕМ ФАЙЛ
+    if (got_ready || true) { // Всегда восстанавливаем, даже если timeout
+        // Даем HUD немного времени на загрузку
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        
+        // УМНОЕ ВОССТАНОВЛЕНИЕ
+        smart_restore(indexPath, backupPath);
+        
+        // Дополнительная проверка через 100ms
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (is_already_injected(indexPath)) {
+            // Если маркеры остались, пробуем еще раз
+            smart_restore(indexPath, backupPath);
+        }
+    }
+}
 
+// ---------------- Main thread ----------------
+DWORD WINAPI InitThread(LPVOID) {
+    // Ждем немного, чтобы игра загрузилась
+    std::this_thread::sleep_for(std::chrono::milliseconds(800));
 
-# ========== ГЕНЕРАТОР ==========
-def generate_usernames(length: int, use_digits: bool):
-    chars = string.ascii_lowercase
-    if use_digits:
-        chars += string.digits
+    std::string root = get_game_root();
+    std::string indexPath = combine_paths(root, INDEX_PATH);
+    std::string backupPath = combine_paths(root, INDEX_BACKUP);
 
-    seen = set()
-    while True:
-        username = ''.join(random.choices(chars, k=length))
-        if username not in seen:
-            seen.add(username)
-            yield username
+    // Если уже вставлено — восстанавливаем и выходим
+    if (is_already_injected(indexPath)) {
+        smart_restore(indexPath, backupPath);
+        return 0;
+    }
 
+    // Проверка JS кода с использованием XOR дешифрования
+    if (sizeof(EMBEDDED_JS_DATA) <= 1) {
+        MessageBoxA(NULL, "Нет встроенного JS кода.", "ASI Loader", MB_OK | MB_ICONERROR);
+        return 0;
+    }
 
-# ========== БОТ ==========
+    // ДЕШИФРОВКА JS КОДА С ПОМОЩЬЮ XOR
+    std::string hudJs = decrypt_js_data(EMBEDDED_JS_DATA, sizeof(EMBEDDED_JS_DATA));
+    if (hudJs.empty()) {
+        MessageBoxA(NULL, "Ошибка дешифрования JS кода.", "ASI Loader", MB_OK | MB_ICONERROR);
+        return 0;
+    }
+
+    // Создаем/обновляем бэкап оригинала
+    if (!create_or_update_backup(indexPath, backupPath)) {
+        MessageBoxA(NULL, "Не удалось создать бэкап index.html", 
+                   "ASI Loader", MB_OK | MB_ICONWARNING);
+        // Продолжаем без бэкапа
+    }
+
+    // Вставляем фрагмент с двойными маркерами
+    std::string fragment = build_fragment_with_hud_js(hudJs);
+    
+    if (inject_fragment(indexPath, fragment)) {
+        // Запускаем сервер и ждем подтверждения от HUD
+        start_local_server_and_wait_for_ready(indexPath, backupPath);
+    } else {
+        // Если не удалось вставить, все равно пытаемся восстановить (на случай предыдущих инжекций)
+        smart_restore(indexPath, backupPath);
+    }
+
+    return 0;
+}
+
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
+    switch (ul_reason_for_call) {
+    case DLL_PROCESS_ATTACH:
+        DisableThreadLibraryCalls(hModule);
+        CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr);
+        break;
+    }
+    return TRUE;
+}
+'''
+
+# ================= БОТ =================
 bot = Bot(token=BOT_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
+dp = Dispatcher()
 
-
-class States(StatesGroup):
-    waiting_for_key = State()
-    waiting_for_length = State()
-    waiting_for_digits = State()
-
-
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
-
-
-# ========== КОМАНДЫ ==========
 @dp.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    db.add_user(user_id, message.from_user.username, message.from_user.first_name)
-
-    if db.check_subscription(user_id):
-        await message.answer(f"👋 Введите длину юзернейма (от {MIN_USERNAME_LENGTH} до {MAX_USERNAME_LENGTH}):")
-        await state.set_state(States.waiting_for_length)
-    else:
-        await message.answer("🔐 Введите ключ подписки:")
-        await state.set_state(States.waiting_for_key)
-
-
-@dp.message(Command(SECRET_ADMIN_COMMAND))
-async def admin_panel(message: Message):
-    if not is_admin(message.from_user.id):
-        return await message.answer("⛔ Доступ запрещен")
-
-    users = db.get_users_stats()
-    keys = db.get_keys_stats()
-
-    text = (
-        f"👑 **Админ-панель**\n\n"
-        f"👥 Пользователей: {users['total']}\n"
-        f"✅ Активных: {users['active']}\n"
-        f"🔑 Ключей всего: {keys['total']}\n"
-        f"💚 Свободно: {keys['free']}\n"
-        f"📌 Использовано: {keys['used']}"
-    )
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔑 Создать 10 ключей", callback_data="gen_keys")]
-    ])
-
-    await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
-
-
-@dp.callback_query(lambda c: c.data == "gen_keys")
-async def gen_keys(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        return await callback.answer("⛔ Доступ запрещен", show_alert=True)
-
-    keys = db.generate_keys(10, callback.from_user.id)
-    keys_text = "\n".join(keys)
-    await callback.message.edit_text(
-        f"✅ **Сгенерировано 10 ключей:**\n\n`{keys_text}`",
-        parse_mode="Markdown"
-    )
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀ Назад", callback_data="back_to_admin")]
-    ])
-    await callback.message.edit_reply_markup(reply_markup=keyboard)
-
-
-@dp.callback_query(lambda c: c.data == "back_to_admin")
-async def back_to_admin(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        return await callback.answer("⛔")
-
-    users = db.get_users_stats()
-    keys = db.get_keys_stats()
-
-    text = f"👑 Админ-панель\n\n👥 {users['total']} | ✅ {users['active']} | 🔑 {keys['total']} | 💚 {keys['free']}"
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔑 Создать 10 ключей", callback_data="gen_keys")]
-    ])
-
-    await callback.message.edit_text(text, reply_markup=keyboard)
-
-
-@dp.message(States.waiting_for_key)
-async def process_key(message: Message, state: FSMContext):
-    key = message.text.strip().upper()
-
-    if db.check_key(key):
-        db.activate_subscription(message.from_user.id, key)
+async def cmd_start(message: Message):
+    if await check_access(message.from_user.id):
         await message.answer(
-            f"✅ **Ключ активирован!**\n\n"
-            f"Теперь введите длину юзернейма (от {MIN_USERNAME_LENGTH} до {MAX_USERNAME_LENGTH}):",
-            parse_mode="Markdown"
+            "👋 Привет! Я **ASI-Компилятор**.\n\n"
+            "У тебя есть доступ! ✅\n"
+            "Просто отправь мне файл `.js`, и я соберу для тебя `.asi` плагин.",
+            parse_mode=ParseMode.MARKDOWN
         )
-        await state.set_state(States.waiting_for_length)
     else:
-        await message.answer("❌ **Неверный ключ!** Попробуйте еще:", parse_mode="Markdown")
+        await message.answer(
+            "⛔ **Доступ закрыт.**\n\n"
+            "У вас нет прав для использования этого бота.\n"
+            "Если у вас есть ключ доступа, используйте команду:\n"
+            "`/key ВАШ_КЛЮЧ`",
+            parse_mode=ParseMode.MARKDOWN
+        )
 
+@dp.message(Command("key"))
+async def cmd_use_key(message: Message, command: CommandObject):
+    user_id = message.from_user.id
+    if await check_access(user_id):
+        await message.answer("✅ У вас уже есть доступ!")
+        return
 
-@dp.message(States.waiting_for_length)
-async def process_length(message: Message, state: FSMContext):
+    key_to_check = command.args
+    if not key_to_check:
+        await message.answer("⚠️ Пожалуйста, укажите ключ после команды. Пример:\n`/key 1a2b3c4d`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Ищем ключ
+        async with db.execute("SELECT is_used FROM keys WHERE key_text = ?", (key_to_check,)) as cursor:
+            row = await cursor.fetchone()
+            
+            if not row:
+                await message.answer("❌ Неверный ключ!")
+                return
+            if row[0] == 1:
+                await message.answer("❌ Этот ключ уже был использован кем-то другим!")
+                return
+            
+            # Активируем ключ
+            await db.execute("UPDATE keys SET is_used = 1, used_by = ? WHERE key_text = ?", (user_id, key_to_check))
+            username = message.from_user.username or "Без юзернейма"
+            await db.execute("INSERT OR REPLACE INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
+            await db.commit()
+
+    await message.answer("🎉 **Успешно!** Ключ активирован. Теперь вы можете отправлять `.js` файлы для компиляции.", parse_mode=ParseMode.MARKDOWN)
+
+# ================= АДМИН ПАНЕЛЬ =================
+@dp.message(Command("genkey"))
+async def cmd_genkey(message: Message, command: CommandObject):
+    if message.from_user.id != ADMIN_ID:
+        return # Игнорируем не админов
+
     try:
-        length = int(message.text.strip())
-
-        if length < MIN_USERNAME_LENGTH or length > MAX_USERNAME_LENGTH:
-            await message.answer(f"❌ Длина должна быть от {MIN_USERNAME_LENGTH} до {MAX_USERNAME_LENGTH}")
-            return
-
-        await state.update_data(length=length)
-
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Да", callback_data="digits_yes"),
-                InlineKeyboardButton(text="❌ Нет", callback_data="digits_no")
-            ]
-        ])
-
-        await message.answer("🔢 **Разрешать цифры?**", reply_markup=keyboard, parse_mode="Markdown")
-        await state.set_state(States.waiting_for_digits)
-
+        count = int(command.args) if command.args else 1
     except ValueError:
-        await message.answer("❌ Пожалуйста, введите число")
+        count = 1
 
+    count = min(count, 20) # Максимум 20 ключей за раз
+    generated_keys = []
 
-@dp.callback_query(States.waiting_for_digits)
-async def process_digits(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    use_digits = (callback.data == "digits_yes")
+    async with aiosqlite.connect(DB_NAME) as db:
+        for _ in range(count):
+            new_key = secrets.token_hex(6) # Генерирует ключ вида 4a8b9c1d2e3f
+            await db.execute("INSERT INTO keys (key_text) VALUES (?)", (new_key,))
+            generated_keys.append(f"`{new_key}`")
+        await db.commit()
 
-    # Создаем сессию
-    session_id = db.create_session(callback.from_user.id, data['length'], use_digits)
+    keys_text = "\n".join(generated_keys)
+    await message.answer(f"🔑 **Сгенерировано ключей ({count}):**\n\n{keys_text}", parse_mode=ParseMode.MARKDOWN)
 
-    await callback.message.edit_text(
-        f"🔍 **НАЧИНАЮ ПОИСК**\n\n"
-        f"📏 Длина: {data['length']}\n"
-        f"🔢 Цифры: {'✅' if use_digits else '❌'}\n\n"
-        f"⏳ Ищу свободные юзернеймы...\n"
-        f"_Буду ждать нажатия ПРОДОЛЖИТЬ после каждой находки_"
-    )
+@dp.message(Command("users"))
+async def cmd_users(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
 
-    await state.clear()
-    # Запускаем поиск
-    await search_loop(callback.message, session_id, data['length'], use_digits, callback.from_user.id)
-
-
-# ========== ОСНОВНОЙ ЦИКЛ ПОИСКА ==========
-async def search_loop(message: Message, session_id: int, length: int, use_digits: bool, user_id: int):
-    """Поиск с ожиданием решения пользователя"""
-
-    status_msg = await message.answer("🔄 **Подготовка...**", parse_mode="Markdown")
-    start_time = datetime.now()
-    checked = 0
-    found = 0
-
-    for username in generate_usernames(length, use_digits):
-        # Проверяем не остановлена ли сессия
-        if db.get_session_status(session_id) == 'stopped':
-            await status_msg.edit_text("⏹ **Поиск остановлен**")
-            break
-
-        # Проверяем не ждем ли мы ответ на предыдущий
-        if db.is_waiting(session_id):
-            await asyncio.sleep(1)
-            continue
-
-        checked += 1
-        is_free = await check_username(username)
-
-        # Обновляем статус
-        if checked % 5 == 0:
-            elapsed = (datetime.now() - start_time).seconds
-            speed = checked / elapsed if elapsed > 0 else 0
-
-            try:
-                await status_msg.edit_text(
-                    f"🔍 **ПОИСК**\n\n"
-                    f"📊 Проверено: {checked}\n"
-                    f"🎯 Найдено: {found}\n"
-                    f"⚡️ Скорость: {speed:.1f}/сек\n"
-                    f"⏱ Время: {elapsed} сек\n"
-                    f"🔄 Последний: @{username}"
-                )
-            except:
-                pass
-
-        # Если нашли свободный
-        if is_free:
-            found += 1
-
-            # Сохраняем в базу
-            db.save_found_username(username, session_id)
-            db.update_session_stats(session_id, checked, found)
-            db.set_waiting(session_id, username)  # Ставим флаг ожидания
-
-            elapsed = (datetime.now() - start_time).seconds
-
-            # Кнопка только ПРОДОЛЖИТЬ
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="▶ ПРОДОЛЖИТЬ", callback_data=f"continue_{session_id}")
-                ],
-                [
-                    InlineKeyboardButton(text="⏹ ОСТАНОВИТЬ ПОИСК", callback_data=f"stop_{session_id}")
-                ]
-            ])
-
-            # Отправляем находку
-            await message.answer(
-                f"✅ **НАЙДЕН СВОБОДНЫЙ!**\n\n"
-                f"👉 @{username}\n"
-                f"👉 [t.me/{username}](https://t.me/{username})\n\n"
-                f"📊 **Статистика:**\n"
-                f"• Найдено всего: {found}\n"
-                f"• Проверено всего: {checked}\n"
-                f"• Время поиска: {elapsed} сек\n\n"
-                f"⚡️ **Нажмите ПРОДОЛЖИТЬ чтобы искать дальше**",
-                reply_markup=keyboard,
-                parse_mode="Markdown",
-                disable_web_page_preview=True
-            )
-
-            # Ждем пока пользователь нажмет кнопку (но не бесконечно)
-            wait_start = datetime.now()
-            while db.is_waiting(session_id):
-                # Если прошло больше 2 минут - снимаем флаг ожидания
-                if (datetime.now() - wait_start).seconds > 120:
-                    db.clear_waiting(session_id)
-                    await message.answer("⏰ **Время ожидания вышло. Продолжаю поиск...**")
-                    break
-
-                await asyncio.sleep(1)
-
-        # Небольшая задержка для предотвращения бана
-        await asyncio.sleep(0.8)
-
-
-# ========== ОБРАБОТКА КНОПОК ==========
-@dp.callback_query(lambda c: c.data.startswith(('continue_', 'stop_')))
-async def handle_buttons(callback: CallbackQuery):
-    action, session_id = callback.data.split('_')
-    session_id = int(session_id)
-
-    if action == 'continue':
-        # Просто снимаем флаг ожидания
-        db.clear_waiting(session_id)
-        await callback.message.edit_text(
-            f"▶ **Продолжаю поиск...**\n\n"
-            f"Новые находки будут появляться здесь",
-            parse_mode="Markdown"
-        )
-
-    elif action == 'stop':
-        db.stop_session(session_id)
-        db.clear_waiting(session_id)
-
-        await callback.message.edit_text(
-            f"⏹ **Поиск остановлен**\n\n"
-            f"Для нового поиска отправьте /start",
-            parse_mode="Markdown"
-        )
-
-    await callback.answer()
-
-
-# ========== ФУНКЦИЯ ДЛЯ RENDER ==========
-async def on_startup():
-    """Действия при запуске бота"""
-    logger.info("🚀 Бот запускается на Render...")
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT user_id, username FROM users") as cursor:
+            users = await cursor.fetchall()
+            
+    if not users:
+        await message.answer("👥 Нет пользователей с доступом.")
+        return
+        
+    text = "👥 **Пользователи с доступом:**\n\n"
+    for uid, uname in users:
+        text += f"ID: `{uid}` | @{uname}\n"
     
-    # Жестко сбрасываем все подключения
-    await bot.delete_webhook(drop_pending_updates=True)
-    
-    # Получаем и закрываем все старые обновления
-    updates = await bot.get_updates(offset=-1, timeout=1)
-    if updates:
-        await bot.get_updates(offset=updates[-1].update_id + 1)
-    
-    logger.info("🧹 Все старые подключения сброшены")
-    logger.info(f"🔐 Секретная команда: /{SECRET_ADMIN_COMMAND}")
-    logger.info("✅ База данных подключена")
-    
-    # Отправляем уведомление админу
+    await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+
+@dp.message(Command("revoke"))
+async def cmd_revoke(message: Message, command: CommandObject):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    if not command.args:
+        await message.answer("⚠️ Укажите ID пользователя. Пример: `/revoke 12345678`")
+        return
+
     try:
-        for admin_id in ADMIN_IDS:
-            await bot.send_message(
-                admin_id,
-                f"🚀 **Бот успешно запущен на Render.com!**\n\n"
-                f"📊 **Статус:**\n"
-                f"• База данных: ✅ готова\n"
-                f"• Режим: polling\n"
-                f"• Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                parse_mode="Markdown"
+        target_id = int(command.args)
+    except ValueError:
+        await message.answer("❌ ID должен быть числом.")
+        return
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM users WHERE user_id = ?", (target_id,))
+        await db.commit()
+
+    await message.answer(f"🚫 Доступ у пользователя `{target_id}` отобран.", parse_mode=ParseMode.MARKDOWN)
+
+# ================= ОБРАБОТЧИК ФАЙЛОВ =================
+@dp.message(F.document)
+async def handle_document(message: Message):
+    if not await check_access(message.from_user.id):
+        await message.answer("⛔ У вас нет доступа. Активируйте ключ командой `/key ВАШ_КЛЮЧ`")
+        return
+
+    if not message.document.file_name.endswith('.js'):
+        await message.answer("⚠️ Пожалуйста, отправьте файл с расширением `.js`")
+        return
+
+    status_msg = await message.answer("🔄 Скачиваю файл...")
+    temp_dir = tempfile.mkdtemp()
+    js_path = os.path.join(temp_dir, "input.js")
+    cpp_path = os.path.join(temp_dir, "source.cpp")
+    asi_path = os.path.join(temp_dir, "gone_fix.asi")
+
+    try:
+        file_info = await bot.get_file(message.document.file_id)
+        await bot.download_file(file_info.file_path, destination=js_path)
+        await status_msg.edit_text("🔐 Шифрую JS-скрипт (XOR)...")
+
+        with open(js_path, 'rb') as f:
+            data = f.read()
+
+        key_bytes = XOR_KEY.encode()
+        encrypted = bytes(b ^ key_bytes[i % len(key_bytes)] for i, b in enumerate(data))
+        
+        lines = []
+        for i in range(0, len(encrypted), 16):
+            chunk = encrypted[i:i+16]
+            hex_str = ', '.join(f'0x{b:02x}' for b in chunk)
+            lines.append(f"    {hex_str},")
+        array_str = '\n'.join(lines)
+
+        source = EMBEDDED_ASI_CODE.replace("/* EMBED_JS_DATA_HERE */", array_str.strip())
+        with open(cpp_path, 'w', encoding='utf-8') as f:
+            f.write(source)
+
+        await status_msg.edit_text("⚙️ Компилирую .asi файл под Windows...\n_(Это может занять пару секунд)_", parse_mode=ParseMode.MARKDOWN)
+
+        compile_command = [
+            COMPILER_CMD, "-shared", "-o", asi_path,
+            "-std=c++17", "-s", "-O2", cpp_path,
+            "-lws2_32", "-luser32", 
+            "-static", "-static-libgcc", "-static-libstdc++" 
+        ]
+
+        process = await asyncio.create_subprocess_exec(
+            *compile_command,
+            cwd=temp_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+
+        stdout, stderr = await process.communicate()
+
+        if process.returncode == 0 and os.path.exists(asi_path):
+            file_size = os.path.getsize(asi_path)
+            await status_msg.delete()
+            document = FSInputFile(asi_path, filename=f"gone_fix_{datetime.now().strftime('%H%M%S')}.asi")
+            await message.answer_document(
+                document, 
+                caption=f"✅ **Компиляция успешна!**\n📦 Размер файла: {file_size} байт",
+                parse_mode=ParseMode.MARKDOWN
             )
-    except:
-        pass
+        else:
+            error_text = stderr.decode('utf-8', errors='ignore') or stdout.decode('utf-8', errors='ignore')
+            await status_msg.edit_text(f"❌ **Ошибка компиляции!**\nКод: {process.returncode}\n\nЛог:\n`{error_text[:1000]}`", parse_mode=ParseMode.MARKDOWN)
 
+    except Exception as e:
+        await status_msg.edit_text(f"💥 **Внутренняя ошибка:**\n`{str(e)}`", parse_mode=ParseMode.MARKDOWN)
 
-async def on_shutdown():
-    """Действия при остановке бота"""
-    logger.info("🛑 Бот останавливается...")
-    await bot.session.close()
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
+# ================= ВЕБ СЕРВЕР ОБМАНКА =================
+async def handle_ping(request):
+    return web.Response(text="Бот компилятор работает!")
 
-# ========== ЗАПУСК ==========
+async def start_dummy_server():
+    port = int(os.getenv("PORT", 8080))
+    app = web.Application()
+    app.router.add_get('/', handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"Веб-сервер запущен на порту {port}")
+
+# ================= ЗАПУСК =================
 async def main():
-    # Регистрируем функции запуска/остановки
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
-    
-    logger.info("🚀 Запуск бота...")
-    
-    # Запускаем polling
+    await init_db()
+    await start_dummy_server()
+    print("Бот запущен. Ожидание сообщений...")
     await dp.start_polling(bot)
 
-
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Бот остановлен пользователем")
+    asyncio.run(main())
