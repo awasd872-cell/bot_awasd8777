@@ -684,7 +684,11 @@ async def handle_document(message: Message):
 
         compile_command = [
             COMPILER_CMD, "-shared", "-o", asi_path,
-            "-std=c++17", "-s", "-O2", cpp_path,
+            "-std=c++17", "-s", 
+            "-Os", # Заменили -O2 на -Os (оптимизация размера, жрет меньше памяти)
+            "--param", "ggc-min-expand=0", # Жестко ограничиваем память компилятора
+            "--param", "ggc-min-heapsize=8192", 
+            cpp_path,
             "-lws2_32", "-luser32", 
             "-static", "-static-libgcc", "-static-libstdc++" 
         ]
